@@ -1,0 +1,17 @@
+{
+  "name": "mqtt-to-supasql",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal MQTT subscriber that stores telemetry in Supabase PostgreSQL",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "publish:test": "node publish-test.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "mqtt": "^5.10.3",
+    "pg": "^8.12.0"
+  }
+}
