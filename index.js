@@ -46,28 +46,33 @@ const insertSql = `
 
 let latestRow = null;
 let flushTimer = null;
-let lastSavedAt = Date.now();
+let lastFlushAttemptAt = Date.now();
+let lastInsertedSignature = null;
 
-function toNumber(value, fallback = null) {
+function toNumber(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function buildSignature(row) {
+  return `${row.device_ts}|${row.uptime_s}|${row.temp_c}|${row.ldr_raw}|${row.ldr_pct}|${row.rssi_dbm}|${row.cpu_pct}|${row.voltage_v}|${row.current_ma}|${row.power_mw}|${row.used_mah}|${row.battery_pct}|${row.battery_min}`;
 }
 
 function normalizePayload(payload) {
   return {
     device_ts: String(payload.ts || new Date().toISOString()),
     uptime_s: toNumber(payload.up, 0),
-    temp_c: toNumber(payload.temp),
-    ldr_raw: toNumber(payload.ldr),
-    ldr_pct: toNumber(payload.ldr_pct),
-    rssi_dbm: toNumber(payload.rssi),
-    cpu_pct: toNumber(payload.cpu),
-    voltage_v: toNumber(payload.v),
-    current_ma: toNumber(payload.ma),
-    power_mw: toNumber(payload.mw),
-    used_mah: toNumber(payload.mah),
-    battery_pct: toNumber(payload.batt),
-    battery_min: toNumber(payload.batt_min)
+    temp_c: toNumber(payload.temp, 0),
+    ldr_raw: toNumber(payload.ldr, 0),
+    ldr_pct: toNumber(payload.ldr_pct, 0),
+    rssi_dbm: toNumber(payload.rssi, 0),
+    cpu_pct: toNumber(payload.cpu, 0),
+    voltage_v: toNumber(payload.v, 0),
+    current_ma: toNumber(payload.ma, 0),
+    power_mw: toNumber(payload.mw, 0),
+    used_mah: toNumber(payload.mah, 0),
+    battery_pct: toNumber(payload.batt, 0),
+    battery_min: toNumber(payload.batt_min, 0)
   };
 }
 
@@ -92,12 +97,20 @@ async function saveReading(row) {
 async function flushLatest() {
   if (!latestRow) return;
 
+  lastFlushAttemptAt = Date.now();
+
   const row = latestRow;
   latestRow = null;
+  const signature = buildSignature(row);
+
+  if (signature === lastInsertedSignature) {
+    console.log('[DB] Duplicate sample skipped');
+    return;
+  }
 
   try {
     await saveReading(row);
-    lastSavedAt = Date.now();
+    lastInsertedSignature = signature;
     console.log(`[DB] Inserted reading ts=${row.device_ts}`);
   } catch (err) {
     // Put the row back so it can be retried on next cycle.
@@ -109,7 +122,7 @@ async function flushLatest() {
 function scheduleFlush() {
   if (flushTimer) return;
 
-  const elapsed = Date.now() - lastSavedAt;
+  const elapsed = Date.now() - lastFlushAttemptAt;
   const delay = Math.max(0, writeIntervalMs - elapsed);
 
   flushTimer = setTimeout(async () => {
@@ -149,6 +162,12 @@ client.on('message', async (topic, message) => {
   }
 
   const row = normalizePayload(parsed);
+  const incomingSignature = buildSignature(row);
+
+  if (incomingSignature === lastInsertedSignature) {
+    console.log('[MQTT] Duplicate incoming sample skipped');
+    return;
+  }
 
   latestRow = row;
   scheduleFlush();
