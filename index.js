@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import http from 'http';
 import mqtt from 'mqtt';
 import pg from 'pg';
 
@@ -16,6 +17,7 @@ const mqttUrl = process.env.MQTT_URL;
 const mqttTopic = process.env.MQTT_TOPIC;
 const appName = process.env.APP_NAME || 'mqtt-to-supasql';
 const writeIntervalMs = Number(process.env.WRITE_INTERVAL_MS || 30000);
+const port = Number(process.env.PORT || 10000);
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -48,6 +50,27 @@ let latestRow = null;
 let flushTimer = null;
 let lastFlushAttemptAt = Date.now();
 let lastInsertedSignature = null;
+let mqttConnected = false;
+
+const server = http.createServer((req, res) => {
+  if (req.url === '/health' || req.url === '/healthz') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      ok: true,
+      app: appName,
+      mqttConnected,
+      queued: Boolean(latestRow)
+    }));
+    return;
+  }
+
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('OK\n');
+});
+
+server.listen(port, '0.0.0.0', () => {
+  console.log(`[HTTP] Listening on 0.0.0.0:${port}`);
+});
 
 function toNumber(value, fallback = 0) {
   const n = Number(value);
@@ -142,6 +165,7 @@ const client = mqtt.connect(mqttUrl, {
 });
 
 client.on('connect', () => {
+  mqttConnected = true;
   console.log(`[MQTT] Connected: ${mqttUrl}`);
   client.subscribe(mqttTopic, { qos: 0 }, (err) => {
     if (err) {
@@ -175,14 +199,17 @@ client.on('message', async (topic, message) => {
 });
 
 client.on('error', (err) => {
+  mqttConnected = false;
   console.error('[MQTT] Error:', err.message);
 });
 
 client.on('reconnect', () => {
+  mqttConnected = false;
   console.log('[MQTT] Reconnecting...');
 });
 
 client.on('offline', () => {
+  mqttConnected = false;
   console.log('[MQTT] Offline');
 });
 
@@ -192,6 +219,7 @@ process.on('SIGTERM', shutdown);
 async function shutdown() {
   console.log('\n[APP] Shutting down...');
   if (flushTimer) clearTimeout(flushTimer);
+  server.close();
   await flushLatest();
   client.end(true);
   await pool.end();
